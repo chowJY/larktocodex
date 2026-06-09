@@ -42,6 +42,13 @@ class BridgeConfig:
     turn_timeout_seconds: int
 
 
+@dataclass
+class ActiveTurn:
+    future: asyncio.Future[dict[str, Any]]
+    on_message: Any | None = None
+    seen_messages: set[str] | None = None
+
+
 def setup_logging() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -109,7 +116,7 @@ def load_config(path: Path = CONFIG_PATH) -> BridgeConfig:
         lark_app_id=dotenv.get("LARK_APP_ID", ""),
         lark_app_secret=dotenv.get("LARK_APP_SECRET", ""),
         lark_cli=str(data.get("lark_cli") or "lark-cli.cmd"),
-        reply_mode=str(data.get("reply_mode") or "reply"),
+        reply_mode=str(data.get("reply_mode") or "all"),
         turn_timeout_seconds=int(data.get("turn_timeout_seconds") or 900),
     )
 
@@ -219,7 +226,7 @@ class CodexClient:
         self.ws: websockets.WebSocketClientProtocol | None = None
         self.next_id = 1
         self.pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
-        self.completed: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self.active_turns: dict[str, ActiveTurn] = {}
         self.reader_task: asyncio.Task[None] | None = None
 
     async def connect(self) -> None:
@@ -259,9 +266,33 @@ class CodexClient:
             if msg.get("method") == "turn/completed":
                 params = msg.get("params") or {}
                 thread_id = params.get("threadId")
-                future = self.completed.pop(thread_id, None)
-                if future and not future.done():
-                    future.set_result(params)
+                active = self.active_turns.get(thread_id)
+                if active:
+                    await self._emit_agent_messages(active, msg)
+                    if not active.future.done():
+                        active.future.set_result(params)
+                continue
+            thread_id = extract_thread_id(msg)
+            active = self.active_turns.get(thread_id) if thread_id else None
+            if active:
+                await self._emit_agent_messages(active, msg)
+
+    async def _emit_agent_messages(self, active: ActiveTurn, payload: dict[str, Any]) -> None:
+        if not active.on_message:
+            return
+        if active.seen_messages is None:
+            active.seen_messages = set()
+        for message in extract_agent_messages(payload):
+            markers = message_markers(message)
+            if markers & active.seen_messages:
+                continue
+            active.seen_messages.update(markers)
+            try:
+                result = active.on_message(message)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logging.exception("failed to emit streamed codex message")
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         assert self.ws is not None
@@ -298,9 +329,16 @@ class CodexClient:
         logging.info("created codex thread thread_id=%s", thread_id)
         return thread_id
 
-    async def run_turn(self, thread_id: str, text: str, timeout_seconds: int, workspace_root: Path) -> str:
+    async def run_turn(
+        self,
+        thread_id: str,
+        text: str,
+        timeout_seconds: int,
+        workspace_root: Path,
+        on_message: Any | None = None,
+    ) -> str:
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-        self.completed[thread_id] = future
+        self.active_turns[thread_id] = ActiveTurn(future=future, on_message=on_message, seen_messages=set())
         await self.request(
             "turn/start",
             {
@@ -314,9 +352,10 @@ class CodexClient:
         if turn.get("status") == "failed":
             error = turn.get("error") or {}
             return f"Codex turn failed: {error.get('message') or 'unknown error'}"
-        answer = extract_final_answer(turn)
+        answer = extract_reply_answer(turn, all_messages=bool(on_message))
         if answer:
-            return answer
+            self.active_turns.pop(thread_id, None)
+            return "" if on_message else answer
         turn_id = str(turn.get("id") or "")
         logging.info(
             "turn completion had no extractable text thread_id=%s turn_id=%s items_view=%s item_types=%s",
@@ -327,10 +366,21 @@ class CodexClient:
         )
         if turn_id:
             full_turn = await self.find_turn(thread_id, turn_id)
-            answer = extract_final_answer(full_turn)
+            if on_message:
+                active = self.active_turns.get(thread_id) or ActiveTurn(
+                    future=future,
+                    on_message=on_message,
+                    seen_messages=set(),
+                )
+                await self._emit_agent_messages(active, full_turn)
+                self.active_turns.pop(thread_id, None)
+                return ""
+            answer = extract_reply_answer(full_turn, all_messages=False)
             if answer:
+                self.active_turns.pop(thread_id, None)
                 return answer
-        return "Codex did not return a final answer."
+        self.active_turns.pop(thread_id, None)
+        return "" if on_message else "Codex did not return a final answer."
 
     async def find_turn(self, thread_id: str, turn_id: str) -> dict[str, Any]:
         cursor: str | None = None
@@ -379,6 +429,65 @@ def extract_final_answer(turn: dict[str, Any]) -> str:
     ]
     selected = [message for message in (final_messages or messages) if message]
     return "\n\n".join(selected).strip()
+
+
+def extract_reply_answer(turn: dict[str, Any], all_messages: bool) -> str:
+    if not all_messages:
+        return extract_final_answer(turn)
+    messages = [
+        str(item.get("text") or "").strip()
+        for item in turn.get("items", [])
+        if item.get("type") == "agentMessage"
+    ]
+    return "\n\n".join(message for message in messages if message).strip()
+
+
+def wants_all_codex_messages(config: BridgeConfig) -> bool:
+    return config.reply_mode.strip().lower() in {"all", "stream", "messages", "agent_messages"}
+
+
+def extract_thread_id(payload: Any) -> str:
+    if isinstance(payload, dict):
+        for key in ("threadId", "thread_id"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        for value in payload.values():
+            thread_id = extract_thread_id(value)
+            if thread_id:
+                return thread_id
+    elif isinstance(payload, list):
+        for value in payload:
+            thread_id = extract_thread_id(value)
+            if thread_id:
+                return thread_id
+    return ""
+
+
+def extract_agent_messages(payload: Any) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        if payload.get("type") == "agentMessage" and str(payload.get("text") or "").strip():
+            messages.append(payload)
+        for value in payload.values():
+            messages.extend(extract_agent_messages(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            messages.extend(extract_agent_messages(value))
+    return messages
+
+
+def message_markers(message: dict[str, Any]) -> set[str]:
+    markers: set[str] = set()
+    message_id = message.get("id")
+    if message_id:
+        markers.add(f"id:{message_id}")
+    text = str(message.get("text") or "").strip()
+    phase = str(message.get("phase") or "")
+    if text:
+        markers.add(f"text:{text}")
+        markers.add(f"text:{phase}:{text}")
+    return markers
 
 
 def normalize_event(raw: str) -> dict[str, Any] | None:
@@ -469,14 +578,17 @@ def reply_to_lark(config: BridgeConfig, event: dict[str, Any], text: str) -> Non
         logging.warning("skip reply: event has no message_id")
         return
     reply_text = text[:8000]
+    content_json = json.dumps({"text": reply_text}, ensure_ascii=False)
     args = [
         config.lark_cli,
         "im",
         "+messages-reply",
         "--message-id",
         message_id,
-        "--text",
-        reply_text,
+        "--msg-type",
+        "text",
+        "--content",
+        content_json,
         "--as",
         "bot",
     ]
@@ -527,8 +639,21 @@ async def consume_events(
         try:
             if not thread_id:
                 thread_id = await codex.ensure_thread(state, workspace_root)
+            stream_messages = wants_all_codex_messages(config)
+
+            async def reply_streamed_message(message: dict[str, Any]) -> None:
+                text = str(message.get("text") or "").strip()
+                if text:
+                    await asyncio.to_thread(reply_to_lark, config, event, text)
+
             try:
-                answer = await codex.run_turn(thread_id, prompt, config.turn_timeout_seconds, workspace_root)
+                answer = await codex.run_turn(
+                    thread_id,
+                    prompt,
+                    config.turn_timeout_seconds,
+                    workspace_root,
+                    on_message=reply_streamed_message if stream_messages else None,
+                )
             except Exception as exc:
                 if not is_thread_not_found(exc):
                     raise
@@ -538,11 +663,18 @@ async def consume_events(
                     state.pop("thread_id", None)
                 save_state(state)
                 thread_id = await codex.ensure_thread(state, workspace_root)
-                answer = await codex.run_turn(thread_id, prompt, config.turn_timeout_seconds, workspace_root)
+                answer = await codex.run_turn(
+                    thread_id,
+                    prompt,
+                    config.turn_timeout_seconds,
+                    workspace_root,
+                    on_message=reply_streamed_message if stream_messages else None,
+                )
         except Exception as exc:
             logging.exception("codex turn failed")
             answer = f"Codex bridge error: {exc}"
-        await asyncio.to_thread(reply_to_lark, config, event, answer)
+        if answer:
+            await asyncio.to_thread(reply_to_lark, config, event, answer)
 
 
 async def run_bridge(workspace_root: Path) -> None:
@@ -572,11 +704,17 @@ async def run_bridge(workspace_root: Path) -> None:
         await asyncio.sleep(2)
         await codex.connect()
         consumer_task = asyncio.create_task(consume_events(config, codex, lark_proc, workspace_root))
-        consumer_task.add_done_callback(
-            lambda task: logging.error("event consumer stopped: %s", task.exception())
-            if task.exception()
-            else logging.info("event consumer stopped")
-        )
+        def log_consumer_done(task: asyncio.Task[None]) -> None:
+            if task.cancelled():
+                logging.info("event consumer stopped")
+                return
+            exc = task.exception()
+            if exc:
+                logging.error("event consumer stopped: %s", exc)
+            else:
+                logging.info("event consumer stopped")
+
+        consumer_task.add_done_callback(log_consumer_done)
         tasks.append(consumer_task)
         await stop.wait()
     finally:
@@ -608,7 +746,7 @@ def init_config(chat_id: str | None) -> None:
         "codex_ws_url": "ws://127.0.0.1:17345",
         "codex_token_file": ".lark-events/codex-ws-token.txt",
         "lark_cli": "lark-cli.cmd",
-        "reply_mode": "reply",
+        "reply_mode": "all",
         "turn_timeout_seconds": 900,
     }
     CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
