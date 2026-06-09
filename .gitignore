@@ -1,0 +1,11 @@
+.env
+.lark-events/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.venv/
+venv/
+.idea/
+.vscode/
