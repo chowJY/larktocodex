@@ -44,6 +44,7 @@ Required project fields:
 - `lark_cli`
 - `reply_mode`
 - `event_reply_mode`
+- `event_max_age_seconds`, default `120`
 - `turn_timeout_seconds`
 
 Do not commit `.env`, `.lark-events/`, chat ids, tokens, or logs.
@@ -82,6 +83,8 @@ Stop bridges:
 .\codex-lark.ps1 stop-all
 ```
 
+Before stopping, the launcher sends `<project> 链接断开` to the project's configured chat and clears that project's `processed-messages.json`.
+
 If the current shell blocks PowerShell scripts, use:
 
 ```powershell
@@ -93,6 +96,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-lark.ps1 status-
 The Lark consumer reads `im.message.receive_v1` events as the configured bot. Messages are accepted only from configured chat ids and are ignored if sent by the bot itself.
 
 Each accepted Lark message is forwarded to the Codex thread for the project's `workspace_root`. The bridge streams Codex messages back according to `reply_mode` and can emit summary event replies according to `event_reply_mode`.
+
+On startup, the bridge clears `processed-messages.json` and ignores Lark events whose message creation time is older than the startup window configured by `event_max_age_seconds`. This prevents old events replayed by the Lark consumer after restart from being processed as new requests.
+
+Processed message ids are written under a small file lock, so overlapping consumers cannot accept the same `message_id` at the same time.
 
 Permission requests are assigned visible request numbers, for example:
 
@@ -116,6 +123,13 @@ When Codex emits a final answer, the bridge releases the user-facing turn gate a
 
 If the Lark event consumer exits, the main bridge now shuts down and releases the project lock. `stop` and `stop-all` can also scan for project processes when pid state is missing, which helps clean old half-stopped bridges.
 
+Each bridge start rotates previous runtime logs before opening new ones:
+
+- `bridge.log` becomes `bridge_back_<last-modified-time>.log`.
+- `lark-replies.log` becomes `lark-replies_backup_<last-modified-time>.log`.
+
+The current `bridge.log` and `lark-replies.log` then contain only output from the new bridge run.
+
 ## Verification
 
 Syntax check:
@@ -134,4 +148,3 @@ Lifecycle check:
 ```
 
 Inspect logs under `.lark-events/projects/<project>/bridge.log` and `.lark-events/projects/<project>/lark-replies.log`.
-

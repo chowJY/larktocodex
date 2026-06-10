@@ -31,6 +31,13 @@ The original single Python implementation has been split into a small package un
 - Fixed command approval response payloads to use the Codex app-server `decision` envelope.
 - Fixed event-consumer shutdown so bridge locks are released when the Lark consumer exits.
 - Improved `stop`, `stop-all`, and `status-all` behavior for multi-project operation and stale process cleanup.
+- Added stale Lark message filtering with `event_max_age_seconds` so replayed old events after restart are ignored.
+- Added file-locked processed-message updates so multiple bridge consumers cannot accept the same Lark `message_id`.
+- Added lifecycle maintenance:
+  - `stop`, `restart`, and `stop-all` send a project disconnect notice before stopping.
+  - stop maintenance clears `processed-messages.json`.
+  - startup rotates previous `bridge.log` and `lark-replies.log` into timestamped backups.
+  - startup clears `processed-messages.json` before accepting new events.
 - Split the implementation by feature area and removed duplicated logic from the old monolithic bridge file.
 
 ## Verification Performed
@@ -44,6 +51,8 @@ The original single Python implementation has been split into a small package un
   - `stop-all`
   - `start-all`
   - `status-all`
+- Local file-operation check for startup log rotation and processed-message clearing.
+- PowerShell parser check for `tools/codex-lark.ps1`.
 - User-side functional verification for Lark replies, approval flow, duplicate approval handling, and `start-all`.
 
 ## Operational Notes
@@ -58,3 +67,9 @@ Runtime files and credentials remain local:
 
 These are intentionally excluded by `.gitignore`.
 
+On each bridge start, runtime logs are rotated inside the project state directory:
+
+- `bridge.log` -> `bridge_back_<last-modified-time>.log`
+- `lark-replies.log` -> `lark-replies_backup_<last-modified-time>.log`
+
+The new process then writes fresh log files for the new session.

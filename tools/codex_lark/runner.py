@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 import subprocess
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,16 +14,18 @@ from .approvals import approval_summary, parse_approval_decision
 from .codex_client import CodexClient
 from .codex_events import format_summary_event, is_thread_not_found, wants_all_codex_messages, wants_summary_events
 from .config import BridgeConfig, load_config
-from .lark_io import normalize_event, reply_to_lark, send_startup_messages, should_handle
+from .lark_io import event_create_time_ms, normalize_event, reply_to_lark, send_startup_messages, should_handle
 from .processes import log_task_done, pipe_process_output, start_codex_app_server, start_lark_consumer
 from .state import (
     acquire_instance_lock,
+    backup_and_clear_runtime_logs,
     clear_process_state,
+    clear_processed_message_ids,
     load_processed_message_ids,
     load_state,
     release_instance_lock,
-    save_processed_message_ids,
     save_state,
+    try_mark_message_processed,
     update_process_state,
 )
 
@@ -54,6 +57,7 @@ class BridgeRunner:
         lark_proc: subprocess.Popen[str],
         workspace_root: Path,
         initial_thread_id: str = "",
+        started_at_ms: int = 0,
     ) -> None:
         self.config = config
         self.codex = codex
@@ -63,6 +67,7 @@ class BridgeRunner:
         self.workspace_key = str(workspace_root)
         self.thread_id = initial_thread_id or str((self.state.get("threads") or {}).get(self.workspace_key) or "")
         self.processed_message_ids = load_processed_message_ids(config)
+        self.started_at_ms = started_at_ms or int(time.time() * 1000)
         self.active_session: TurnSession | None = None
         self.queue: deque[QueuedMessage] = deque()
 
@@ -88,12 +93,26 @@ class BridgeRunner:
         if not ok:
             return
         message_id = str(event.get("message_id") or event.get("id") or "")
+        created_at_ms = event_create_time_ms(event)
+        max_age_ms = max(0, self.config.event_max_age_seconds) * 1000
+        if created_at_ms and max_age_ms and created_at_ms < self.started_at_ms - max_age_ms:
+            logging.info(
+                "ignored stale message chat_id=%s message_id=%s created_at_ms=%s bridge_started_at_ms=%s max_age_seconds=%s",
+                event.get("chat_id"),
+                message_id,
+                created_at_ms,
+                self.started_at_ms,
+                self.config.event_max_age_seconds,
+            )
+            return
         if message_id and message_id in self.processed_message_ids:
             logging.info("ignored duplicate message chat_id=%s message_id=%s", event.get("chat_id"), message_id)
             return
         if message_id:
+            if not try_mark_message_processed(self.config, message_id):
+                logging.info("ignored duplicate message chat_id=%s message_id=%s", event.get("chat_id"), message_id)
+                return
             self.processed_message_ids.add(message_id)
-            save_processed_message_ids(self.config, self.processed_message_ids)
         logging.info("accepted message chat_id=%s message_id=%s", event.get("chat_id"), message_id)
 
         decision = parse_approval_decision(prompt)
@@ -258,9 +277,7 @@ async def run_bridge(
         use_first_project=use_first_project,
         codex_ws_url=codex_ws_url,
     )
-    setup_logging(config)
     workspace_root = workspace_root.resolve()
-    logging.info("starting bridge project=%s workspace=%s state=%s", config.name, workspace_root, config.state_path)
     lock_handle = None
     codex_proc: subprocess.Popen[str] | None = None
     lark_proc: subprocess.Popen[str] | None = None
@@ -280,6 +297,11 @@ async def run_bridge(
     codex = CodexClient(config)
     try:
         lock_handle = acquire_instance_lock(config)
+        backup_and_clear_runtime_logs(config)
+        clear_processed_message_ids(config)
+        setup_logging(config)
+        logging.info("starting bridge project=%s workspace=%s state=%s", config.name, workspace_root, config.state_path)
+        logging.info("cleared processed messages and rotated runtime logs project=%s", config.name)
         codex_proc = start_codex_app_server(config, workspace_root)
         lark_proc = start_lark_consumer(config)
         update_process_state(config, workspace_root, codex_proc.pid, lark_proc.pid)
@@ -293,7 +315,14 @@ async def run_bridge(
         thread_id = await codex.ensure_thread(state, workspace_root)
         logging.info("codex thread is ready before consuming lark events thread_id=%s", thread_id)
         await asyncio.to_thread(send_startup_messages, config)
-        runner = BridgeRunner(config, codex, lark_proc, workspace_root, thread_id)
+        runner = BridgeRunner(
+            config,
+            codex,
+            lark_proc,
+            workspace_root,
+            thread_id,
+            started_at_ms=int(time.time() * 1000),
+        )
         consumer_task = asyncio.create_task(runner.consume())
 
         def log_consumer_done(task: asyncio.Task[None]) -> None:

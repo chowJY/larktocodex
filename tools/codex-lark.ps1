@@ -261,6 +261,23 @@ function Stop-CodexLark {
     return
 }
 
+function Invoke-CodexLarkStopMaintenance {
+    param([string]$TargetProjectName)
+
+    $args = @($Script, "notify-stop")
+    if ($TargetProjectName) {
+        $args += @("--project-name", $TargetProjectName)
+    }
+    try {
+        & python @args
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "stop maintenance exited with code $LASTEXITCODE"
+        }
+    } catch {
+        Write-Warning "failed to send disconnect notice or clear processed messages: $_"
+    }
+}
+
 function Start-CodexLarkProject {
     param(
         [Parameter(Mandatory = $true)]$Project,
@@ -369,6 +386,7 @@ if ($Command -eq "stop") {
         $targetProject = @(Get-CodexLarkProjects) | Where-Object { [string]$_.name -eq $ProjectName } | Select-Object -First 1
     }
     $targetWorkspace = if ($targetProject -and $targetProject.workspace_root) { [string]$targetProject.workspace_root } else { "" }
+    Invoke-CodexLarkStopMaintenance -TargetProjectName $ProjectName
     Stop-CodexLark -TargetStatePath $targetStatePath -AllowProcessScan -TargetProjectName $ProjectName -TargetWorkspaceRoot $targetWorkspace
     return
 }
@@ -376,12 +394,14 @@ if ($Command -eq "stop") {
 if ($Command -eq "stop-all") {
     $projects = @(Get-CodexLarkProjects)
     if (-not $projects) {
+        Invoke-CodexLarkStopMaintenance
         Stop-CodexLark -AllowProcessScan
         return
     }
     foreach ($project in $projects) {
         $name = [string]$project.name
         Write-Host "stopping project '$name'"
+        Invoke-CodexLarkStopMaintenance -TargetProjectName $name
         Stop-CodexLark -TargetStatePath (Get-CodexLarkProjectStatePath -Name $name) -AllowProcessScan -TargetProjectName $name -TargetWorkspaceRoot ([string]$project.workspace_root)
     }
     return
@@ -394,6 +414,7 @@ if ($Command -eq "restart") {
         $targetProject = @(Get-CodexLarkProjects) | Where-Object { [string]$_.name -eq $ProjectName } | Select-Object -First 1
     }
     $targetWorkspace = if ($targetProject -and $targetProject.workspace_root) { [string]$targetProject.workspace_root } else { "" }
+    Invoke-CodexLarkStopMaintenance -TargetProjectName $ProjectName
     Stop-CodexLark -TargetStatePath $targetStatePath -AllowProcessScan -TargetProjectName $ProjectName -TargetWorkspaceRoot $targetWorkspace
     Start-Sleep -Seconds 1
     $Command = "start"

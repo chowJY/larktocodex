@@ -4,6 +4,7 @@ import json
 import logging
 import msvcrt
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,19 @@ def processed_messages_path(config: BridgeConfig) -> Path:
     return config.state_dir / "processed-messages.json"
 
 
+def clear_processed_message_ids(config: BridgeConfig) -> None:
+    path = processed_messages_path(config)
+    lock_path = config.state_dir / "processed-messages.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            path.write_text("[]\n", encoding="utf-8")
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 def load_processed_message_ids(config: BridgeConfig) -> set[str]:
     path = processed_messages_path(config)
     if not path.exists():
@@ -47,6 +61,58 @@ def save_processed_message_ids(config: BridgeConfig, message_ids: set[str]) -> N
     path.parent.mkdir(parents=True, exist_ok=True)
     recent = sorted(message_ids)[-1000:]
     path.write_text(json.dumps(recent, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _backup_path(path: Path, backup_stem: str) -> Path:
+    modified_at = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y%m%d_%H%M%S")
+    candidate = path.with_name(f"{backup_stem}_{modified_at}{path.suffix}")
+    index = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{backup_stem}_{modified_at}_{index}{path.suffix}")
+        index += 1
+    return candidate
+
+
+def backup_and_clear_runtime_logs(config: BridgeConfig) -> None:
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    for path, backup_stem in (
+        (config.log_path, "bridge_back"),
+        (config.reply_log_path, "lark-replies_backup"),
+    ):
+        if not path.exists():
+            continue
+        path.replace(_backup_path(path, backup_stem))
+
+
+def try_mark_message_processed(config: BridgeConfig, message_id: str) -> bool:
+    if not message_id:
+        return True
+    path = processed_messages_path(config)
+    lock_path = config.state_dir / "processed-messages.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            records: list[str] = []
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8-sig"))
+                    if isinstance(data, list):
+                        records = [str(item) for item in data if item]
+                except Exception:
+                    logging.exception("failed to read processed message ids path=%s", path)
+                    records = []
+            if message_id in set(records):
+                return False
+            records.append(message_id)
+            path.write_text(
+                json.dumps(records[-1000:], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return True
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def acquire_instance_lock(config: BridgeConfig) -> Any:

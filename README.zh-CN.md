@@ -46,6 +46,7 @@
 - `lark_cli`
 - `reply_mode`
 - `event_reply_mode`
+- `event_max_age_seconds`，默认 `120`
 - `turn_timeout_seconds`
 
 不要提交 `.env`、`.lark-events/`、真实 chat id、token、日志或应用密钥。
@@ -84,6 +85,8 @@
 .\codex-lark.ps1 stop-all
 ```
 
+停止前，启动器会先向项目配置的群聊发送 `<project> 链接断开`，然后清空该项目的 `processed-messages.json`。
+
 如果当前 PowerShell 执行策略阻止脚本运行，可使用：
 
 ```powershell
@@ -95,6 +98,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-lark.ps1 status-
 桥接进程会以配置的飞书机器人身份消费 `im.message.receive_v1` 事件。只有配置中允许的聊天会被处理，机器人自己发出的消息会被忽略。
 
 收到有效消息后，桥接会把文本发送到对应项目工作目录的 Codex thread。Codex 的回复会根据 `reply_mode` 流式或最终回复到飞书；命令、编辑和审批等事件可根据 `event_reply_mode` 发送摘要。
+
+每次启动时，桥接会清空 `processed-messages.json`，并根据 `event_max_age_seconds` 忽略创建时间早于启动窗口的飞书消息事件，防止重启后事件消费者回放旧消息并被当作新需求处理。
+
+已处理消息 ID 的写入带文件锁，即使存在短暂的重复消费者，也不会同时接受同一个 `message_id`。
 
 审批请求会分配可见编号，例如：
 
@@ -117,6 +124,13 @@ Command: ...
 当 Codex 发出 final answer 后，桥接会释放用户侧输入门闩，后续消息不会再因为后台 turn 收尾而收到“Codex 正在处理上一条需求”的误提示。
 
 如果飞书事件消费者退出，主 bridge 会跟随关闭并释放项目锁。`stop` 和 `stop-all` 在 pid state 丢失时也会尝试按项目名和工作目录扫描旧进程，清理半停止状态。
+
+每次启动会在打开新日志前轮转旧日志：
+
+- `bridge.log` 会备份为 `bridge_back_<最后修改时间>.log`
+- `lark-replies.log` 会备份为 `lark-replies_backup_<最后修改时间>.log`
+
+新的 `bridge.log` 和 `lark-replies.log` 只包含本次启动后的内容。
 
 ## 审批处理
 
@@ -188,4 +202,3 @@ python -m py_compile @files
 - Lark 回复日志
 
 仓库中的 `.env.example` 只保留占位符，用于说明需要填写的字段格式。
-

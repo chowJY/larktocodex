@@ -42,6 +42,46 @@ def normalize_event(raw: str) -> dict[str, Any] | None:
     return event
 
 
+def _coerce_epoch_ms(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return 0
+            number = float(text)
+        else:
+            number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if number <= 0:
+        return 0
+    if number > 10_000_000_000_000:
+        return int(number / 1000)
+    if number < 10_000_000_000:
+        return int(number * 1000)
+    return int(number)
+
+
+def event_create_time_ms(event: dict[str, Any]) -> int:
+    keys = ("create_time", "message_create_time", "event_time", "timestamp", "ts")
+    containers: list[Any] = [event]
+    nested_event = event.get("event")
+    if isinstance(nested_event, dict):
+        containers.append(nested_event)
+        containers.append(nested_event.get("message"))
+    containers.append(event.get("message"))
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for key in keys:
+            created_at = _coerce_epoch_ms(container.get(key))
+            if created_at:
+                return created_at
+    return 0
+
+
 def extract_message_content(event: dict[str, Any]) -> str:
     content = event.get("content")
     if isinstance(content, str):
@@ -202,3 +242,8 @@ def send_lark_text(config: BridgeConfig, chat_id: str, text: str) -> None:
 def send_startup_messages(config: BridgeConfig) -> None:
     for chat_id in sorted(config.allowed_chat_ids):
         send_lark_text(config, chat_id, config.name)
+
+
+def send_disconnect_messages(config: BridgeConfig) -> None:
+    for chat_id in sorted(config.allowed_chat_ids):
+        send_lark_text(config, chat_id, f"{config.name} 链接断开")

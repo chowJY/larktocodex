@@ -25,6 +25,7 @@ class BridgeConfig:
     lark_cli: str
     reply_mode: str
     event_reply_mode: str
+    event_max_age_seconds: int
     state_dir: Path
     state_path: Path
     turn_timeout_seconds: int
@@ -158,6 +159,7 @@ def load_config(
             lark_cli=str(project.get("lark_cli") or "lark-cli.cmd"),
             reply_mode=str(project.get("reply_mode") or "all"),
             event_reply_mode=str(project.get("event_reply_mode") or project.get("reply_mode") or "all"),
+            event_max_age_seconds=int(project.get("event_max_age_seconds") or 120),
             state_dir=state_dir,
             state_path=state_dir / "bridge-state.json",
             turn_timeout_seconds=int(project.get("turn_timeout_seconds") or 900),
@@ -191,6 +193,7 @@ def load_config(
         lark_cli=str(data.get("lark_cli") or "lark-cli.cmd"),
         reply_mode=str(data.get("reply_mode") or "all"),
         event_reply_mode=str(data.get("event_reply_mode") or data.get("reply_mode") or "all"),
+        event_max_age_seconds=int(data.get("event_max_age_seconds") or 120),
         state_dir=STATE_DIR,
         state_path=STATE_PATH,
         turn_timeout_seconds=int(data.get("turn_timeout_seconds") or 900),
@@ -216,6 +219,7 @@ def init_config(chat_id: str | None) -> None:
             "lark_cli": "lark-cli.cmd",
             "reply_mode": "all",
             "event_reply_mode": "all",
+            "event_max_age_seconds": 120,
             "turn_timeout_seconds": 900,
         }
         CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -234,6 +238,7 @@ def init_config(chat_id: str | None) -> None:
                     "lark_cli": "lark-cli.cmd",
                     "reply_mode": "all",
                     "event_reply_mode": "all",
+                    "event_max_age_seconds": 120,
                     "turn_timeout_seconds": 900,
                 }
             ]

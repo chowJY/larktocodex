@@ -4,8 +4,10 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from .config import init_config
+from .config import init_config, load_config
+from .lark_io import send_disconnect_messages
 from .runner import run_bridge
+from .state import clear_processed_message_ids
 
 
 def main() -> None:
@@ -19,9 +21,19 @@ def main() -> None:
     run.add_argument("--project-name", default="")
     run.add_argument("--use-first-project", action="store_true")
     run.add_argument("--codex-ws-url", default="")
+    notify_stop = sub.add_parser("notify-stop")
+    notify_stop.add_argument("--project-name", default="")
+    notify_stop.add_argument("--use-first-project", action="store_true")
     args = parser.parse_args()
     if args.command == "init":
         init_config(args.chat_id)
+    elif args.command == "notify-stop":
+        config = load_config(
+            project_name=args.project_name,
+            use_first_project=args.use_first_project,
+        )
+        send_disconnect_messages(config)
+        clear_processed_message_ids(config)
     elif args.command == "run":
         asyncio.run(
             run_bridge(
