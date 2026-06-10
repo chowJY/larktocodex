@@ -178,15 +178,28 @@ function Clear-CodexLarkPidState {
 }
 
 function Get-CodexLarkProcesses {
-    param([string]$BridgeRoot)
+    param(
+        [string]$BridgeRoot,
+        [string]$ProjectName,
+        [string]$WorkspaceRoot
+    )
 
     $escapedBridge = [regex]::Escape($BridgeRoot)
+    $escapedProject = if ($ProjectName) { [regex]::Escape($ProjectName) } else { "" }
+    $escapedWorkspace = if ($WorkspaceRoot) { [regex]::Escape($WorkspaceRoot) } else { "" }
     try {
-        return Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+        $matches = Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
             $_.CommandLine -match "$escapedBridge.*codex_lark_bridge\.py" -or
             $_.CommandLine -match 'im\.message\.receive_v1' -or
             ($_.CommandLine -match 'app-server' -and $_.CommandLine -match 'ws://127\.0\.0\.1:17345')
         }
+        if ($ProjectName -or $WorkspaceRoot) {
+            $matches = $matches | Where-Object {
+                ($escapedProject -and $_.CommandLine -match "--project-name\s+`"?$escapedProject`"?") -or
+                ($escapedWorkspace -and $_.CommandLine -match $escapedWorkspace)
+            }
+        }
+        return $matches
     } catch {
         $script:CodexLarkProcessQueryFailed = $_
         return @()
@@ -196,7 +209,9 @@ function Get-CodexLarkProcesses {
 function Stop-CodexLark {
     param(
         [string]$TargetStatePath = $StatePath,
-        [switch]$AllowProcessScan
+        [switch]$AllowProcessScan,
+        [string]$TargetProjectName,
+        [string]$TargetWorkspaceRoot
     )
 
     $pidProcs = @(Get-CodexLarkPidProcesses -StatePath $TargetStatePath)
@@ -225,7 +240,7 @@ function Stop-CodexLark {
         return
     }
 
-    $procs = Get-CodexLarkProcesses -BridgeRoot $BridgeRoot
+    $procs = Get-CodexLarkProcesses -BridgeRoot $BridgeRoot -ProjectName $TargetProjectName -WorkspaceRoot $TargetWorkspaceRoot
     if ($script:CodexLarkProcessQueryFailed) {
         Write-Host "codex-lark process details are unavailable: $script:CodexLarkProcessQueryFailed"
         Write-Host "no pid state was found; start codex-lark again once to enable pid-based stop"
@@ -290,12 +305,20 @@ function Show-CodexLarkStatus {
             $targetState = Get-CodexLarkProjectStatePath -Name $name
             $pidProcs = @(Get-CodexLarkPidProcesses -StatePath $targetState)
             $alive = $pidProcs.Count -gt 0
+            $state = $null
+            if ($alive -and (Test-Path -LiteralPath $targetState)) {
+                try {
+                    $state = Get-Content -LiteralPath $targetState -Raw -Encoding UTF8 | ConvertFrom-Json
+                } catch {
+                    $state = $null
+                }
+            }
             $rows += [pscustomobject]@{
                 Project = $name
                 Running = $alive
                 Workspace = [string]$project.workspace_root
                 ChatIds = (@($project.chat_ids) + @($project.chat_id) | Where-Object { $_ }) -join ","
-                CodexWsUrl = if ($alive) { [string]$state.codex_ws_url } else { [string]$project.codex_ws_url }
+                CodexWsUrl = if ($alive -and $state) { [string]$state.codex_ws_url } else { [string]$project.codex_ws_url }
                 Pids = ($pidProcs | ForEach-Object { $_.Id }) -join ","
             }
         }
@@ -341,7 +364,12 @@ function Show-CodexLarkStatus {
 
 if ($Command -eq "stop") {
     $targetStatePath = if ($ProjectName) { Get-CodexLarkProjectStatePath -Name $ProjectName } else { $StatePath }
-    Stop-CodexLark -TargetStatePath $targetStatePath -AllowProcessScan:(!$ProjectName)
+    $targetProject = $null
+    if ($ProjectName) {
+        $targetProject = @(Get-CodexLarkProjects) | Where-Object { [string]$_.name -eq $ProjectName } | Select-Object -First 1
+    }
+    $targetWorkspace = if ($targetProject -and $targetProject.workspace_root) { [string]$targetProject.workspace_root } else { "" }
+    Stop-CodexLark -TargetStatePath $targetStatePath -AllowProcessScan -TargetProjectName $ProjectName -TargetWorkspaceRoot $targetWorkspace
     return
 }
 
@@ -354,14 +382,19 @@ if ($Command -eq "stop-all") {
     foreach ($project in $projects) {
         $name = [string]$project.name
         Write-Host "stopping project '$name'"
-        Stop-CodexLark -TargetStatePath (Get-CodexLarkProjectStatePath -Name $name)
+        Stop-CodexLark -TargetStatePath (Get-CodexLarkProjectStatePath -Name $name) -AllowProcessScan -TargetProjectName $name -TargetWorkspaceRoot ([string]$project.workspace_root)
     }
     return
 }
 
 if ($Command -eq "restart") {
     $targetStatePath = if ($ProjectName) { Get-CodexLarkProjectStatePath -Name $ProjectName } else { $StatePath }
-    Stop-CodexLark -TargetStatePath $targetStatePath -AllowProcessScan:(!$ProjectName)
+    $targetProject = $null
+    if ($ProjectName) {
+        $targetProject = @(Get-CodexLarkProjects) | Where-Object { [string]$_.name -eq $ProjectName } | Select-Object -First 1
+    }
+    $targetWorkspace = if ($targetProject -and $targetProject.workspace_root) { [string]$targetProject.workspace_root } else { "" }
+    Stop-CodexLark -TargetStatePath $targetStatePath -AllowProcessScan -TargetProjectName $ProjectName -TargetWorkspaceRoot $targetWorkspace
     Start-Sleep -Seconds 1
     $Command = "start"
 }
