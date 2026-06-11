@@ -297,10 +297,10 @@ async def run_bridge(
     tasks: list[asyncio.Task[Any]] = []
     codex = CodexClient(config)
     try:
-        lock_handle = acquire_instance_lock(config)
         backup_and_clear_runtime_logs(config)
-        clear_processed_message_ids(config)
         setup_logging(config)
+        lock_handle = acquire_instance_lock(config)
+        clear_processed_message_ids(config)
         logging.info("starting bridge project=%s workspace=%s state=%s", config.name, workspace_root, config.state_path)
         logging.info("cleared processed messages and rotated runtime logs project=%s", config.name)
         codex_proc = start_codex_app_server(config, workspace_root)
@@ -369,4 +369,5 @@ def setup_logging(config: BridgeConfig) -> None:
             logging.FileHandler(config.log_path, encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
+        force=True,
     )

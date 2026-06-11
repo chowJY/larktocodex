@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,20 @@ def lark_env(config: BridgeConfig) -> dict[str, str]:
         env["LARK_APP_SECRET"] = config.lark_app_secret
         env["FEISHU_APP_SECRET"] = config.lark_app_secret
     return env
+
+
+def lark_command(config: BridgeConfig) -> list[str]:
+    cli = config.lark_cli
+    if os.name == "nt" and cli.lower().endswith(".cmd"):
+        resolved = shutil.which(cli)
+        if resolved:
+            base_dir = Path(resolved).parent
+            script = base_dir / "node_modules" / "@larksuite" / "cli" / "scripts" / "run.js"
+            bundled_node = base_dir / "node.exe"
+            node = str(bundled_node) if bundled_node.exists() else (shutil.which("node.exe") or shutil.which("node"))
+            if node and script.exists():
+                return [node, str(script)]
+    return [cli]
 
 
 def safe_project_name(name: str) -> str:

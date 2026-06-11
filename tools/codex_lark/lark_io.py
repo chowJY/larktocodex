@@ -6,7 +6,7 @@ import subprocess
 import time
 from typing import Any
 
-from .config import BridgeConfig, lark_env
+from .config import BridgeConfig, lark_command, lark_env
 from .paths import BRIDGE_ROOT
 
 
@@ -17,6 +17,7 @@ def append_lark_reply_log(
     message_id: str = "",
     chat_id: str = "",
     truncated: bool = False,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     config.reply_log_path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -29,6 +30,8 @@ def append_lark_reply_log(
         "truncated": truncated,
         "text": text,
     }
+    if extra:
+        record.update(extra)
     with config.reply_log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -161,16 +164,8 @@ def reply_to_lark(config: BridgeConfig, event: dict[str, Any], text: str) -> Non
         logging.warning("skip reply: event has no message_id")
         return
     reply_text = text[:8000]
-    append_lark_reply_log(
-        config,
-        "reply",
-        reply_text,
-        message_id=message_id,
-        chat_id=str(event.get("chat_id") or ""),
-        truncated=len(text) > len(reply_text),
-    )
     content_json = json.dumps({"text": reply_text}, ensure_ascii=False)
-    args = [config.lark_cli]
+    args = lark_command(config)
     if config.lark_profile:
         args.extend(["--profile", config.lark_profile])
     args.extend([
@@ -196,21 +191,36 @@ def reply_to_lark(config: BridgeConfig, event: dict[str, Any], text: str) -> Non
         stderr=subprocess.PIPE,
     )
     if result.returncode != 0:
+        append_lark_reply_log(
+            config,
+            "reply_failed",
+            reply_text,
+            message_id=message_id,
+            chat_id=str(event.get("chat_id") or ""),
+            truncated=len(text) > len(reply_text),
+            extra={
+                "rc": result.returncode,
+                "stderr": result.stderr[-2000:],
+                "stdout": result.stdout[-2000:],
+            },
+        )
         logging.error("lark reply failed rc=%s stderr=%s stdout=%s", result.returncode, result.stderr, result.stdout)
     else:
+        append_lark_reply_log(
+            config,
+            "reply",
+            reply_text,
+            message_id=message_id,
+            chat_id=str(event.get("chat_id") or ""),
+            truncated=len(text) > len(reply_text),
+            extra={"stdout": result.stdout[-2000:]},
+        )
         logging.info("replied to lark message_id=%s reply_chars=%s truncated=%s", message_id, len(reply_text), len(text) > len(reply_text))
 
 
 def send_lark_text(config: BridgeConfig, chat_id: str, text: str) -> None:
     message_text = text[:8000]
-    append_lark_reply_log(
-        config,
-        "send",
-        message_text,
-        chat_id=chat_id,
-        truncated=len(text) > len(message_text),
-    )
-    args = [config.lark_cli]
+    args = lark_command(config)
     if config.lark_profile:
         args.extend(["--profile", config.lark_profile])
     args.extend([
@@ -234,8 +244,28 @@ def send_lark_text(config: BridgeConfig, chat_id: str, text: str) -> None:
         stderr=subprocess.PIPE,
     )
     if result.returncode != 0:
+        append_lark_reply_log(
+            config,
+            "send_failed",
+            message_text,
+            chat_id=chat_id,
+            truncated=len(text) > len(message_text),
+            extra={
+                "rc": result.returncode,
+                "stderr": result.stderr[-2000:],
+                "stdout": result.stdout[-2000:],
+            },
+        )
         logging.error("lark startup message failed chat_id=%s rc=%s stderr=%s stdout=%s", chat_id, result.returncode, result.stderr, result.stdout)
     else:
+        append_lark_reply_log(
+            config,
+            "send",
+            message_text,
+            chat_id=chat_id,
+            truncated=len(text) > len(message_text),
+            extra={"stdout": result.stdout[-2000:]},
+        )
         logging.info("sent lark startup message chat_id=%s chars=%s truncated=%s", chat_id, len(message_text), len(text) > len(message_text))
 
 
