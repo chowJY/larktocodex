@@ -23,6 +23,42 @@
   - `projects-config.json`：唯一支持的配置文件。
   - `projects/<project>/`：项目级运行状态、日志和 websocket token。
 
+## 依赖环境
+
+运行桥接前，请先安装并确认以下命令可用：
+
+- Windows PowerShell 或命令提示符。
+- Python 3.10 或更新版本，命令名为 `python`。
+- Python 包 `websockets`，安装到运行桥接所用的 Python 环境：
+
+  ```powershell
+  python -m pip install websockets
+  ```
+
+- Node.js LTS，并包含 `npm` 和 `npx`。飞书 CLI 工具链和相关初始化流程依赖 `npx`。检查命令：
+
+  ```powershell
+  node --version
+  npm --version
+  npx --version
+  ```
+
+- 飞书 / Lark CLI，命令名为 `lark-cli.cmd`。本项目期望使用 npm 安装后的 Node 包目录结构；在 Windows 上发送回复时会直接调用 CLI 的 Node 入口，避免 CMD/PowerShell 对中文、空格、换行、`|` 等字符的二次解析。
+
+  ```powershell
+  npm install -g @larksuite/cli
+  lark-cli.cmd --version
+  ```
+
+- Codex CLI，命令名为 `codex.cmd`，并支持 `app-server`：
+
+  ```powershell
+  codex.cmd --version
+  codex.cmd app-server --help
+  ```
+
+安装全局 npm 工具后，如果 `lark-cli.cmd`、`npx` 或 `codex.cmd` 仍提示找不到，请重新打开终端。`init.bat` 可以把本仓库的 `codex-lark.cmd` 注册到当前用户 `PATH`，之后可在任意目录直接运行 `codex-lark start`、`codex-lark status`、`codex-lark stop` 等命令。
+
 ## 初始化
 
 在仓库根目录运行：

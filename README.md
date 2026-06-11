@@ -23,6 +23,42 @@ The bridge is configured through `.lark-events/projects-config.json`. Each proje
   - `projects-config.json`: the only supported config file.
   - `projects/<project>/`: project runtime state, logs, and websocket token.
 
+## Prerequisites
+
+Install and verify these commands before running the bridge:
+
+- Windows PowerShell or Command Prompt.
+- Python 3.10 or newer, available as `python`.
+- Python package `websockets`, installed in the Python environment used to run the bridge:
+
+  ```powershell
+  python -m pip install websockets
+  ```
+
+- Node.js LTS, including `npm` and `npx`. `npx` is required by the Lark CLI tooling and related setup flows. Verify:
+
+  ```powershell
+  node --version
+  npm --version
+  npx --version
+  ```
+
+- Lark/Feishu CLI, available as `lark-cli.cmd`. This project expects the Node package layout used by the npm-installed CLI, because replies are sent through the CLI's Node entrypoint on Windows to avoid CMD/PowerShell quoting issues.
+
+  ```powershell
+  npm install -g @larksuite/cli
+  lark-cli.cmd --version
+  ```
+
+- Codex CLI, available as `codex.cmd`, with `app-server` support:
+
+  ```powershell
+  codex.cmd --version
+  codex.cmd app-server --help
+  ```
+
+After installing global npm tools, open a new terminal if `lark-cli.cmd`, `npx`, or `codex.cmd` is not found. `init.bat` can register this repository's `codex-lark.cmd` on the current user's `PATH`, so later terminals can run `codex-lark start`, `codex-lark status`, and `codex-lark stop` from any directory.
+
 ## Setup
 
 Run from the repository root:
