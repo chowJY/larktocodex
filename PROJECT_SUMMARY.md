@@ -9,7 +9,7 @@
 The original single Python implementation has been split into a small package under `tools/codex_lark/`:
 
 - `cli.py` keeps command parsing small.
-- `config.py` handles `.env` and project config loading.
+- `config.py` handles project config loading from `.lark-events/projects-config.json`.
 - `state.py` handles JSON state files, processed message ids, pid state, and bridge locks.
 - `processes.py` starts Codex and Lark subprocesses and logs their output.
 - `lark_io.py` parses Lark events and sends replies.
@@ -31,12 +31,15 @@ The original single Python implementation has been split into a small package un
 - Fixed command approval response payloads to use the Codex app-server `decision` envelope.
 - Fixed event-consumer shutdown so bridge locks are released when the Lark consumer exits.
 - Improved `stop`, `stop-all`, and `status-all` behavior for multi-project operation and stale process cleanup.
+- Changed project configuration to a `projects` dictionary keyed by `workspace_root`.
+- Removed legacy single-project `.env` and `.lark-events/bridge-config.json` support.
+- Removed top-level single-project `.lark-events` runtime files; runtime state now lives under `.lark-events/projects/<project>/`.
 - Added stale Lark message filtering with `event_max_age_seconds` so replayed old events after restart are ignored.
 - Added file-locked processed-message updates so multiple bridge consumers cannot accept the same Lark `message_id`.
 - Added lifecycle maintenance:
   - `stop`, `restart`, and `stop-all` send a project disconnect notice before stopping.
   - stop maintenance clears `processed-messages.json`.
-  - startup rotates previous `bridge.log` and `lark-replies.log` into timestamped backups.
+  - startup rotates previous project `bridge.log` and `lark-replies.log` into timestamped backups.
   - startup clears `processed-messages.json` before accepting new events.
 - Split the implementation by feature area and removed duplicated logic from the old monolithic bridge file.
 
@@ -59,7 +62,6 @@ The original single Python implementation has been split into a small package un
 
 Runtime files and credentials remain local:
 
-- `.env`
 - `.lark-events/`
 - websocket token files
 - bridge logs
@@ -69,7 +71,7 @@ These are intentionally excluded by `.gitignore`.
 
 On each bridge start, runtime logs are rotated inside the project state directory:
 
-- `bridge.log` -> `bridge_back_<last-modified-time>.log`
-- `lark-replies.log` -> `lark-replies_backup_<last-modified-time>.log`
+- `.lark-events/projects/<project>/bridge.log` -> `bridge_back_<last-modified-time>.log`
+- `.lark-events/projects/<project>/lark-replies.log` -> `lark-replies_backup_<last-modified-time>.log`
 
 The new process then writes fresh log files for the new session.

@@ -4,6 +4,7 @@ param(
     [string]$Command = "start",
 
     [string]$ChatId,
+    [Parameter(Position = 1)]
     [string]$ProjectName,
     [string]$WorkspaceRoot,
     [string]$CodexWsUrl

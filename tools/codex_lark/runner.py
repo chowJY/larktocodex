@@ -272,12 +272,13 @@ async def run_bridge(
     use_first_project: bool = False,
     codex_ws_url: str = "",
 ) -> None:
+    workspace_root = workspace_root.resolve()
     config = load_config(
         project_name=project_name,
+        workspace_root=workspace_root if not project_name and not use_first_project else None,
         use_first_project=use_first_project,
         codex_ws_url=codex_ws_url,
     )
-    workspace_root = workspace_root.resolve()
     lock_handle = None
     codex_proc: subprocess.Popen[str] | None = None
     lark_proc: subprocess.Popen[str] | None = None

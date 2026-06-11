@@ -2,7 +2,7 @@
 
 `LarkToCodex` 是一个运行在 Windows 上的桥接工具，用于把指定飞书 / Lark 群聊中的消息转发到 Codex `app-server` 会话，并把 Codex 的回复发送回飞书。
 
-它支持单项目和多项目配置。多项目模式下，每个项目都有独立的飞书应用凭据、允许的聊天、Codex websocket 端口、运行状态和日志。
+它通过 `.lark-events/projects-config.json` 配置项目。每个项目都有独立的飞书应用凭据、允许的聊天、Codex websocket 端口、运行状态和日志。
 
 ## 目录结构
 
@@ -19,8 +19,9 @@
   - `codex_events.py`：提取 Codex 消息、命令事件、摘要事件和审批事件。
   - `approvals.py`：审批请求注册、去重、编号、回复解析和响应载荷构造。
   - `runner.py`：主协调器，负责消息队列、turn session、审批回复和关闭流程。
-- `.env`：本地单项目凭据文件，不提交。
 - `.lark-events/`：本地运行状态、项目配置、websocket token 和日志目录，不提交。
+  - `projects-config.json`：唯一支持的配置文件。
+  - `projects/<project>/`：项目级运行状态、日志和 websocket token。
 
 ## 初始化
 
@@ -30,17 +31,17 @@
 .\codex-lark.ps1 init -ChatId oc_REPLACE_ME
 ```
 
-单项目使用时，填写 `.env`。
+初始化后，编辑 `.lark-events/projects-config.json`。
 
-多项目使用时，编辑 `.lark-events/projects-config.json`。
+旧的单项目 `.env` 和 `.lark-events/bridge-config.json` 已不再支持。
 
 项目配置通常包含：
 
-- `name`
+- `projects` 是字典，键为项目 `workspace_root`
+- 每个项目值内包含 `name`
 - `app_id`
 - `app_secret`
 - `chat_id` 或 `chat_ids`
-- `workspace_root`
 - `codex_ws_url`，通常使用 `auto`
 - `codex_token_file`
 - `lark_cli`
@@ -49,7 +50,29 @@
 - `event_max_age_seconds`，默认 `120`
 - `turn_timeout_seconds`
 
-不要提交 `.env`、`.lark-events/`、真实 chat id、token、日志或应用密钥。
+不要提交 `.lark-events/`、真实 chat id、token、日志或应用密钥。
+
+多项目配置示例：
+
+```json
+{
+  "projects": {
+    "<project-path>": {
+      "name": "xunji",
+      "app_id": "cli_REPLACE_ME",
+      "app_secret": "REPLACE_ME",
+      "chat_id": "oc_REPLACE_ME",
+      "codex_ws_url": "auto",
+      "codex_token_file": ".lark-events/projects/xunji/codex-ws-token.txt",
+      "lark_cli": "lark-cli.cmd",
+      "reply_mode": "all",
+      "event_reply_mode": "all",
+      "event_max_age_seconds": 120,
+      "turn_timeout_seconds": 900
+    }
+  }
+}
+```
 
 ## 常用命令
 
@@ -59,10 +82,13 @@
 .\codex-lark.ps1 start
 ```
 
+如果当前目录匹配某个配置的 `workspace_root`，`start` 会自动选择该项目启动。
+
 启动指定项目：
 
 ```powershell
 .\codex-lark.ps1 start -ProjectName xunji
+.\codex-lark.ps1 start xunji
 ```
 
 启动所有项目：
@@ -75,6 +101,7 @@
 
 ```powershell
 .\codex-lark.ps1 status
+.\codex-lark.ps1 status xunji
 .\codex-lark.ps1 status-all
 ```
 
@@ -82,6 +109,7 @@
 
 ```powershell
 .\codex-lark.ps1 stop
+.\codex-lark.ps1 stop xunji
 .\codex-lark.ps1 stop-all
 ```
 
@@ -125,12 +153,12 @@ Command: ...
 
 如果飞书事件消费者退出，主 bridge 会跟随关闭并释放项目锁。`stop` 和 `stop-all` 在 pid state 丢失时也会尝试按项目名和工作目录扫描旧进程，清理半停止状态。
 
-每次启动会在打开新日志前轮转旧日志：
+每个项目启动时，会在打开新日志前轮转旧日志：
 
-- `bridge.log` 会备份为 `bridge_back_<最后修改时间>.log`
-- `lark-replies.log` 会备份为 `lark-replies_backup_<最后修改时间>.log`
+- `.lark-events/projects/<project>/bridge.log` 会备份为 `bridge_back_<最后修改时间>.log`
+- `.lark-events/projects/<project>/lark-replies.log` 会备份为 `lark-replies_backup_<最后修改时间>.log`
 
-新的 `bridge.log` 和 `lark-replies.log` 只包含本次启动后的内容。
+新的项目 `bridge.log` 和 `lark-replies.log` 只包含本次启动后的内容。
 
 ## 审批处理
 
@@ -193,12 +221,9 @@ python -m py_compile @files
 
 以下内容必须只保存在本地：
 
-- `.env`
 - `.lark-events/`
 - 飞书应用密钥
 - 真实 chat id
 - Codex websocket token
 - bridge 日志
 - Lark 回复日志
-
-仓库中的 `.env.example` 只保留占位符，用于说明需要填写的字段格式。

@@ -4,6 +4,7 @@ param(
     [string]$Command = "start",
 
     [string]$ChatId,
+    [Parameter(Position = 1)]
     [string]$ProjectName,
     [string]$WorkspaceRoot,
     [string]$CodexWsUrl
@@ -13,12 +14,24 @@ $ErrorActionPreference = "Stop"
 $BridgeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Script = Join-Path $PSScriptRoot "codex_lark_bridge.py"
 $CurrentWorkspaceRoot = if ($WorkspaceRoot) { (Resolve-Path -LiteralPath $WorkspaceRoot).Path } else { (Get-Location).Path }
-$StatePath = Join-Path $BridgeRoot ".lark-events\bridge-state.json"
 $ProjectsConfigPath = Join-Path $BridgeRoot ".lark-events\projects-config.json"
 
 function ConvertTo-CodexLarkSafeName {
     param([string]$Name)
     return (($Name.Trim()) -replace '[^A-Za-z0-9_.-]', '_')
+}
+
+function ConvertTo-CodexLarkWorkspaceKey {
+    param([string]$WorkspaceRoot)
+
+    if (-not $WorkspaceRoot) {
+        return ""
+    }
+    try {
+        return (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+    } catch {
+        return [System.IO.Path]::GetFullPath($WorkspaceRoot)
+    }
 }
 
 function Get-CodexLarkProjects {
@@ -29,13 +42,85 @@ function Get-CodexLarkProjects {
     if (-not $config.projects) {
         return @()
     }
-    return @($config.projects)
+    if ($config.projects -is [array]) {
+        return @($config.projects)
+    }
+    $projects = @()
+    foreach ($property in $config.projects.PSObject.Properties) {
+        if ($property.Value -isnot [psobject]) {
+            continue
+        }
+        $project = $property.Value
+        if (-not $project.PSObject.Properties["workspace_root"]) {
+            $project | Add-Member -NotePropertyName "workspace_root" -NotePropertyValue $property.Name
+        } elseif (-not [string]$project.workspace_root) {
+            $project.workspace_root = $property.Name
+        }
+        $projects += $project
+    }
+    return @($projects)
+}
+
+function Find-CodexLarkProjectByName {
+    param([string]$Name)
+
+    if (-not $Name) {
+        return $null
+    }
+    return @(Get-CodexLarkProjects) | Where-Object { [string]$_.name -eq $Name } | Select-Object -First 1
+}
+
+function Find-CodexLarkProjectByWorkspace {
+    param([string]$WorkspaceRoot)
+
+    $target = ConvertTo-CodexLarkWorkspaceKey -WorkspaceRoot $WorkspaceRoot
+    if (-not $target) {
+        return $null
+    }
+    return @(Get-CodexLarkProjects) | Where-Object {
+        (ConvertTo-CodexLarkWorkspaceKey -WorkspaceRoot ([string]$_.workspace_root)) -eq $target
+    } | Select-Object -First 1
+}
+
+function Invoke-CodexLarkMissingProjectHook {
+    param([string]$WorkspaceRoot)
+
+    # Reserved for future project auto-registration/initialization.
+    return $null
+}
+
+function Resolve-CodexLarkStartProject {
+    param(
+        [string]$Name,
+        [string]$WorkspaceRoot
+    )
+
+    $projects = @(Get-CodexLarkProjects)
+    if (-not $projects) {
+        return $null
+    }
+    if ($Name) {
+        $project = Find-CodexLarkProjectByName -Name $Name
+        if (-not $project) {
+            throw ("Project not found in {0}: {1}" -f $ProjectsConfigPath, $Name)
+        }
+        return $project
+    }
+    $matched = Find-CodexLarkProjectByWorkspace -WorkspaceRoot $WorkspaceRoot
+    if ($matched) {
+        return $matched
+    }
+    $created = Invoke-CodexLarkMissingProjectHook -WorkspaceRoot $WorkspaceRoot
+    if ($created) {
+        return $created
+    }
+    throw "No project config found for workspace '$WorkspaceRoot' in $ProjectsConfigPath"
 }
 
 function Get-CodexLarkProjectStatePath {
     param([string]$Name)
     if (-not $Name) {
-        return $StatePath
+        throw "Project name is required for project state path"
     }
     $safeName = ConvertTo-CodexLarkSafeName -Name $Name
     return Join-Path $BridgeRoot ".lark-events\projects\$safeName\bridge-state.json"
@@ -208,13 +293,13 @@ function Get-CodexLarkProcesses {
 
 function Stop-CodexLark {
     param(
-        [string]$TargetStatePath = $StatePath,
+        [string]$TargetStatePath,
         [switch]$AllowProcessScan,
         [string]$TargetProjectName,
         [string]$TargetWorkspaceRoot
     )
 
-    $pidProcs = @(Get-CodexLarkPidProcesses -StatePath $TargetStatePath)
+    $pidProcs = if ($TargetStatePath) { @(Get-CodexLarkPidProcesses -StatePath $TargetStatePath) } else { @() }
     if ($pidProcs) {
         $stopIds = @(Get-ProcessTree -RootIds @($pidProcs | ForEach-Object { $_.Id }))
         if (-not $stopIds) {
@@ -311,7 +396,8 @@ function Start-CodexLarkProject {
 function Show-CodexLarkStatus {
     param(
         [switch]$All,
-        [string]$TargetProjectName
+        [string]$TargetProjectName,
+        [string]$TargetWorkspaceRoot
     )
 
     $rows = @()
@@ -343,7 +429,35 @@ function Show-CodexLarkStatus {
         return
     }
 
-    $targetStatePath = if ($TargetProjectName) { Get-CodexLarkProjectStatePath -Name $TargetProjectName } else { $StatePath }
+    $targetProject = if ($TargetProjectName) {
+        Find-CodexLarkProjectByName -Name $TargetProjectName
+    } else {
+        Find-CodexLarkProjectByWorkspace -WorkspaceRoot $TargetWorkspaceRoot
+    }
+    if (-not $targetProject) {
+        if ($projects) {
+            $rows = foreach ($project in $projects) {
+                $name = [string]$project.name
+                $targetState = Get-CodexLarkProjectStatePath -Name $name
+                $pidProcs = @(Get-CodexLarkPidProcesses -StatePath $targetState)
+                [pscustomobject]@{
+                    Project = $name
+                    Running = $pidProcs.Count -gt 0
+                    Workspace = [string]$project.workspace_root
+                    ChatIds = (@($project.chat_ids) + @($project.chat_id) | Where-Object { $_ }) -join ","
+                    CodexWsUrl = [string]$project.codex_ws_url
+                    Pids = ($pidProcs | ForEach-Object { $_.Id }) -join ","
+                }
+            }
+            $rows | Format-Table -AutoSize
+            return
+        }
+        Write-Host "No project config found in $ProjectsConfigPath"
+        return
+    }
+
+    $TargetProjectName = [string]$targetProject.name
+    $targetStatePath = Get-CodexLarkProjectStatePath -Name $TargetProjectName
     $pidProcs = @(Get-CodexLarkPidProcesses -StatePath $targetStatePath)
     if ($pidProcs) {
         Write-Host "codex-lark is running"
@@ -354,38 +468,16 @@ function Show-CodexLarkStatus {
         Write-Host "codex-lark project '$TargetProjectName' is stopped"
         return
     }
-
-    $procs = Get-CodexLarkProcesses -BridgeRoot $BridgeRoot
-    if ($script:CodexLarkProcessQueryFailed) {
-        try {
-            $ready = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:17345/readyz" -TimeoutSec 2
-            if ($ready.StatusCode -eq 200) {
-                Write-Host "codex-lark status is partially available"
-                Write-Host "codex app-server is reachable at ws://127.0.0.1:17345"
-                Write-Host "process details are unavailable in this shell: $script:CodexLarkProcessQueryFailed"
-                return
-            }
-        } catch {
-        }
-        Write-Host "codex-lark status is unavailable"
-        Write-Host "process details are unavailable in this shell: $script:CodexLarkProcessQueryFailed"
-        return
-    }
-    if (-not $procs) {
-        Write-Host "codex-lark is stopped"
-        return
-    }
-    Write-Host "codex-lark is running"
-    $procs | Select-Object ProcessId, Name, CommandLine | Format-Table -AutoSize
 }
 
 if ($Command -eq "stop") {
-    $targetStatePath = if ($ProjectName) { Get-CodexLarkProjectStatePath -Name $ProjectName } else { $StatePath }
-    $targetProject = $null
-    if ($ProjectName) {
-        $targetProject = @(Get-CodexLarkProjects) | Where-Object { [string]$_.name -eq $ProjectName } | Select-Object -First 1
+    $targetProject = if ($ProjectName) { Find-CodexLarkProjectByName -Name $ProjectName } else { Find-CodexLarkProjectByWorkspace -WorkspaceRoot $CurrentWorkspaceRoot }
+    if (-not $targetProject) {
+        throw "No project config found for stop target. Use -ProjectName or stop-all."
     }
-    $targetWorkspace = if ($targetProject -and $targetProject.workspace_root) { [string]$targetProject.workspace_root } else { "" }
+    $ProjectName = [string]$targetProject.name
+    $targetStatePath = Get-CodexLarkProjectStatePath -Name $ProjectName
+    $targetWorkspace = [string]$targetProject.workspace_root
     Invoke-CodexLarkStopMaintenance -TargetProjectName $ProjectName
     Stop-CodexLark -TargetStatePath $targetStatePath -AllowProcessScan -TargetProjectName $ProjectName -TargetWorkspaceRoot $targetWorkspace
     return
@@ -394,9 +486,7 @@ if ($Command -eq "stop") {
 if ($Command -eq "stop-all") {
     $projects = @(Get-CodexLarkProjects)
     if (-not $projects) {
-        Invoke-CodexLarkStopMaintenance
-        Stop-CodexLark -AllowProcessScan
-        return
+        throw "Missing projects config: $ProjectsConfigPath. Run '.\codex-lark.ps1 init' first."
     }
     foreach ($project in $projects) {
         $name = [string]$project.name
@@ -408,12 +498,13 @@ if ($Command -eq "stop-all") {
 }
 
 if ($Command -eq "restart") {
-    $targetStatePath = if ($ProjectName) { Get-CodexLarkProjectStatePath -Name $ProjectName } else { $StatePath }
-    $targetProject = $null
-    if ($ProjectName) {
-        $targetProject = @(Get-CodexLarkProjects) | Where-Object { [string]$_.name -eq $ProjectName } | Select-Object -First 1
+    $targetProject = if ($ProjectName) { Find-CodexLarkProjectByName -Name $ProjectName } else { Find-CodexLarkProjectByWorkspace -WorkspaceRoot $CurrentWorkspaceRoot }
+    if (-not $targetProject) {
+        throw "No project config found for restart target. Use -ProjectName."
     }
-    $targetWorkspace = if ($targetProject -and $targetProject.workspace_root) { [string]$targetProject.workspace_root } else { "" }
+    $ProjectName = [string]$targetProject.name
+    $targetStatePath = Get-CodexLarkProjectStatePath -Name $ProjectName
+    $targetWorkspace = [string]$targetProject.workspace_root
     Invoke-CodexLarkStopMaintenance -TargetProjectName $ProjectName
     Stop-CodexLark -TargetStatePath $targetStatePath -AllowProcessScan -TargetProjectName $ProjectName -TargetWorkspaceRoot $targetWorkspace
     Start-Sleep -Seconds 1
@@ -421,7 +512,7 @@ if ($Command -eq "restart") {
 }
 
 if ($Command -eq "status") {
-    Show-CodexLarkStatus -TargetProjectName $ProjectName
+    Show-CodexLarkStatus -TargetProjectName $ProjectName -TargetWorkspaceRoot $CurrentWorkspaceRoot
     return
 }
 
@@ -465,13 +556,16 @@ try {
     }
 
     $EffectiveCodexWsUrl = $CodexWsUrl
-    if (-not $EffectiveCodexWsUrl) {
-        $projects = @(Get-CodexLarkProjects)
-        $selectedProject = $null
-        if ($ProjectName) {
-            $selectedProject = $projects | Where-Object { [string]$_.name -eq $ProjectName } | Select-Object -First 1
+    $SelectedProject = $null
+    if ($Command -eq "start") {
+        $SelectedProject = Resolve-CodexLarkStartProject -Name $ProjectName -WorkspaceRoot $CurrentWorkspaceRoot
+        if ($SelectedProject) {
+            $ProjectName = [string]$SelectedProject.name
+            $CurrentWorkspaceRoot = ConvertTo-CodexLarkWorkspaceKey -WorkspaceRoot ([string]$SelectedProject.workspace_root)
         }
-        if ($selectedProject -and (Test-CodexLarkAutoWsUrl -Value ([string]$selectedProject.codex_ws_url))) {
+    }
+    if (-not $EffectiveCodexWsUrl) {
+        if ($SelectedProject -and (Test-CodexLarkAutoWsUrl -Value ([string]$SelectedProject.codex_ws_url))) {
             $EffectiveCodexWsUrl = Get-CodexLarkFreeWsUrl
         }
     }

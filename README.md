@@ -2,7 +2,7 @@
 
 Windows bridge for forwarding approved Lark/Feishu chat messages into a Codex `app-server` session, then replying back to Lark.
 
-The bridge is designed for one or more configured projects. Each project owns its own Lark app credentials, allowed chat, Codex websocket port, runtime state, and logs.
+The bridge is configured through `.lark-events/projects-config.json`. Each project owns its own Lark app credentials, allowed chat, Codex websocket port, runtime state, and logs.
 
 ## Structure
 
@@ -19,8 +19,9 @@ The bridge is designed for one or more configured projects. Each project owns it
   - `codex_events.py`: Codex event extraction and formatting.
   - `approvals.py`: permission request registration, dedupe, parsing, and response payloads.
   - `runner.py`: bridge coordinator, message queue, turn session state, and shutdown handling.
-- `.env`: local single-project credentials. Not committed.
 - `.lark-events/`: local runtime state, project config, websocket tokens, and logs. Not committed.
+  - `projects-config.json`: the only supported config file.
+  - `projects/<project>/`: project runtime state, logs, and websocket token.
 
 ## Setup
 
@@ -30,7 +31,9 @@ Run from the repository root:
 .\codex-lark.ps1 init -ChatId oc_REPLACE_ME
 ```
 
-Fill `.env` for single-project use, or edit `.lark-events/projects-config.json` for multi-project use.
+Edit `.lark-events/projects-config.json` after initialization.
+
+Legacy single-project `.env` and `.lark-events/bridge-config.json` files are no longer supported.
 
 Required project fields:
 
@@ -38,7 +41,7 @@ Required project fields:
 - `app_id`
 - `app_secret`
 - `chat_id` or `chat_ids`
-- `workspace_root`
+- `projects` is a dictionary whose key is the project `workspace_root`
 - `codex_ws_url`, usually `auto`
 - `codex_token_file`
 - `lark_cli`
@@ -47,7 +50,29 @@ Required project fields:
 - `event_max_age_seconds`, default `120`
 - `turn_timeout_seconds`
 
-Do not commit `.env`, `.lark-events/`, chat ids, tokens, or logs.
+Do not commit `.lark-events/`, chat ids, tokens, or logs.
+
+Example multi-project config:
+
+```json
+{
+  "projects": {
+    "<project-path>": {
+      "name": "xunji",
+      "app_id": "cli_REPLACE_ME",
+      "app_secret": "REPLACE_ME",
+      "chat_id": "oc_REPLACE_ME",
+      "codex_ws_url": "auto",
+      "codex_token_file": ".lark-events/projects/xunji/codex-ws-token.txt",
+      "lark_cli": "lark-cli.cmd",
+      "reply_mode": "all",
+      "event_reply_mode": "all",
+      "event_max_age_seconds": 120,
+      "turn_timeout_seconds": 900
+    }
+  }
+}
+```
 
 ## Commands
 
@@ -57,10 +82,13 @@ Start one bridge:
 .\codex-lark.ps1 start
 ```
 
+When run from a configured `workspace_root`, `start` selects that project automatically.
+
 Start a named project:
 
 ```powershell
 .\codex-lark.ps1 start -ProjectName xunji
+.\codex-lark.ps1 start xunji
 ```
 
 Start every configured project:
@@ -73,6 +101,7 @@ Check status:
 
 ```powershell
 .\codex-lark.ps1 status
+.\codex-lark.ps1 status xunji
 .\codex-lark.ps1 status-all
 ```
 
@@ -80,6 +109,7 @@ Stop bridges:
 
 ```powershell
 .\codex-lark.ps1 stop
+.\codex-lark.ps1 stop xunji
 .\codex-lark.ps1 stop-all
 ```
 
@@ -123,12 +153,12 @@ When Codex emits a final answer, the bridge releases the user-facing turn gate a
 
 If the Lark event consumer exits, the main bridge now shuts down and releases the project lock. `stop` and `stop-all` can also scan for project processes when pid state is missing, which helps clean old half-stopped bridges.
 
-Each bridge start rotates previous runtime logs before opening new ones:
+Each project bridge start rotates previous runtime logs before opening new ones:
 
-- `bridge.log` becomes `bridge_back_<last-modified-time>.log`.
-- `lark-replies.log` becomes `lark-replies_backup_<last-modified-time>.log`.
+- `.lark-events/projects/<project>/bridge.log` becomes `bridge_back_<last-modified-time>.log`.
+- `.lark-events/projects/<project>/lark-replies.log` becomes `lark-replies_backup_<last-modified-time>.log`.
 
-The current `bridge.log` and `lark-replies.log` then contain only output from the new bridge run.
+The current project `bridge.log` and `lark-replies.log` then contain only output from the new bridge run.
 
 ## Verification
 

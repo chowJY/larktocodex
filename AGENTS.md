@@ -8,7 +8,6 @@ This repository contains a small bridge for forwarding allowed Lark messages int
 - `codex-lark.ps1`: root launcher; forwards `init`, `start`, and `stop` to the tool script.
 - `tools/codex-lark.ps1`: operational PowerShell launcher for starting, stopping, and initializing the bridge.
 - `tools/codex_lark_bridge.py`: main Python implementation for config loading, Lark event consumption, Codex websocket calls, and replies.
-- `.env`: local Lark credentials and allowed chat IDs. Copy from `.env.example`.
 - `.lark-events/`: local runtime state, token, and logs. Treat this as machine-local data.
 
 ## Build, Test, and Development Commands
@@ -19,7 +18,7 @@ There is no build step. Run commands from the repository root.
 .\codex-lark.ps1 init -ChatId oc_REPLACE_ME
 ```
 
-Creates `.env` and `.lark-events/bridge-config.json`. Fill `LARK_APP_ID`, `LARK_APP_SECRET`, and `LARK_CHAT_IDS` in `.env` before starting.
+Creates `.lark-events/projects-config.json`. Fill each project's `app_id`, `app_secret`, and `chat_id` or `chat_ids` before starting.
 
 ```powershell
 .\codex-lark.ps1 start
@@ -47,7 +46,7 @@ PowerShell scripts use approved verbs where practical, `$PascalCase` variable na
 
 ## Testing Guidelines
 
-No formal test suite exists yet. At minimum, run `python -m py_compile tools\codex_lark_bridge.py` after Python edits. For behavior changes, test the lifecycle manually with `init`, `start`, and `stop`, and inspect `.lark-events/bridge.log`.
+No formal test suite exists yet. At minimum, run `python -m py_compile tools\codex_lark_bridge.py` after Python edits. For behavior changes, test the lifecycle manually with `init`, `start`, and `stop`, and inspect `.lark-events/projects/<project>/bridge.log`.
 
 If adding tests, prefer `pytest` under `tests/`, with files named `test_*.py`. Mock subprocesses, websocket clients, and Lark event input instead of requiring real network services.
 
@@ -59,4 +58,4 @@ Pull requests should include the purpose, commands run, manual verification note
 
 ## Security & Configuration Tips
 
-Do not commit `.env`, `.lark-events/`, token files, logs, or chat IDs. Keep `LARK_CHAT_IDS` narrow, using comma-separated values for multiple chats. Avoid logging message contents beyond what is needed for debugging.
+Do not commit `.lark-events/`, token files, logs, or chat IDs. Keep each project's `chat_ids` narrow. Avoid logging message contents beyond what is needed for debugging.
